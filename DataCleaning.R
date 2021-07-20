@@ -18,14 +18,20 @@ player_rankings <-  list.files(pattern = "*atp_rankings") %>%
 end_twenty_eighteen_rankings<- player_rankings %>% 
   dplyr::filter(ranking_date == "2018-12-31")
   
-  
 variable_names <- readr::read_csv("variable_names.csv")
+
+tour_average_variables <- c("first_serve_pct" , "pct_point_won_on_serve")
+
+markov_model_variables <- c("first_serve_pct", "first_serve_win_pct", "second_serve_win_pct",
+                            "first_serve_return_win_pct", "second_serve_return_win_pct")
 
 tidy_atp_matches <- atp_matches %>% 
   dplyr::rename_at(vars(variable_names$old_name), ~variable_names$new_name) %>% 
   dplyr::mutate(match_id = paste0(tourney_id, winner_id, loser_id),
          tourney_date = ymd(tourney_date),
          year = year(tourney_date),
+         w_return_points = l_serve_points,
+         l_return_points = w_serve_points,
          w_second_serve_in = w_serve_points - w_first_serve_in - w_df,
          l_second_serve_in = l_serve_points - l_first_serve_in - l_df,
          w_first_serve_pct = w_first_serve_in / w_serve_points,
@@ -60,15 +66,17 @@ tidy_atp_matches <- atp_matches %>%
          #l_PctPointWonOnReturn = (l_1stSvPct*l_1stSvWinPCt + ((1 - l_1stSvPct)*l_1stSvPct)),
          w_serve_points_won = w_first_serve_points_won + w_second_serve_points_won,
          l_serve_points_won = l_first_serve_points_won + l_second_serve_points_won,
-         w_return_points_won = w_first_serve_return_win + w_second_serve_return_win,
-         l_return_points_won = l_first_serve_return_win + l_second_serve_return_win,
+         w_return_points_won = w_first_serve_return_win + w_second_serve_return_win + l_df,
+         l_return_points_won = l_first_serve_return_win + l_second_serve_return_win + w_df,
          match_total_points = w_serve_points +  l_serve_points,
-         w_points_won = w_serve_points_won + w_return_points_won + l_df,
-         l_points_won = l_serve_points_won + l_return_points_won  + w_df
+         w_points_won = w_serve_points_won + w_return_points_won,
+         l_points_won = l_serve_points_won + l_return_points_won
              ) %>% 
-  filter(!str_detect(tourney_name, "Davis Cup"))
+  dplyr::filter(!str_detect(tourney_name, "Davis Cup")) %>% 
+  dplyr::filter(!str_detect(score, "RET")) %>% 
+  dplyr::mutate(surface = if_else(surface == "Carpet", "Hard", surface))
 
-
+surfaces <- unique(tidy_atp_matches$surface)
 
 atp_winners <- tidy_atp_matches %>% 
   select(tourney_id, match_id, tourney_name, surface, draw_size, tourney_level, tourney_date, 
@@ -87,8 +95,6 @@ atp_loosers <- tidy_atp_matches %>%
          "match_total_points" = "match_totapoints",
   )
 
-tour_average_variables <- c("first_serve_pct" , "pct_point_won_on_serve")
-
 tour_averages_by_year <- rbind(atp_winners, atp_loosers) %>%
   group_by(year(tourney_date)) %>%
   summarise_at(tour_average_variables, mean, na.rm = T) %>% 
@@ -105,6 +111,8 @@ tournament_averages_by_year <- rbind(atp_winners, atp_loosers) %>%
          "tournament_average_pct_point_won_on_serve" = "pct_point_won_on_serve") %>% 
   ungroup() %>% 
   select(-tourney_date)
+
+
 
 
 full_atp_data <- rbind(atp_winners, atp_loosers) %>% 
@@ -130,14 +138,9 @@ five_year_tour_average_serve_return <- full_atp_data %>%
 full_atp_data <- full_atp_data %>% 
   left_join(tour_average_pct_point_won_on_return_by_year, by = "year")
 
-
-
-markov_model_variables <- c("first_serve_pct", "first_serve_win_pct", "second_serve_win_pct",
-                            "first_serve_return_win_pct", "second_serve_return_win_pct")
-
-
 full_atp_data_markov <- full_atp_data %>% 
-  select(tourney_id, match_id, tourney_name, tourney_date, year, surface, name, age, rank, score, round, all_of(markov_model_variables)) %>% 
+  select(tourney_id, match_id, tourney_name, tourney_date, year, surface, name, 
+         age, rank, score, round, all_of(markov_model_variables)) %>% 
   filter(between(year, 2014, 2018)) %>% 
   mutate(year_to_match_with = year(ymd(tourney_date) + years(1))) %>% 
   group_by(name, year, year_to_match_with) %>% 
@@ -195,10 +198,48 @@ twenty_nineteen_slams <- tidy_atp_matches %>%
          prob_player_j_wins_point_on_return = 1- prob_player_i_wins_point_on_serve
          )
 
+twenty_eighteen_slams <- tidy_atp_matches %>% 
+  filter(year(tourney_date) == 2018,
+         best_of == 5 ) %>% 
+  mutate(round_number = str_extract(round, "[[:digit:]]+")) %>% 
+  select(tourney_id, match_id, tourney_name, tourney_date, year, surface, match_num, round, round_number, winner_id, 
+         winner_name, loser_id, loser_name) %>% 
+  arrange(tourney_name, tourney_id, round_number) %>% 
+  rename("player_i" = "winner_name",
+         "player_i_id" = "winner_id",
+         "player_j" = "loser_name",
+         "player_j_id" = "loser_id") %>% 
+  left_join(tournament_averages_by_year,
+            by = c("tourney_name", "year" = "year_to_match_with")) %>% 
+  left_join(select(full_atp_data_markov, name, five_year_average_pct_point_won_on_serve, 
+                   five_year_average_pct_point_won_on_return, year_to_match_with),
+            by = c("player_i" = "name", "year" = "year_to_match_with")) %>% 
+  rename("player_i_five_year_average_pct_point_won_on_serve" = "five_year_average_pct_point_won_on_serve",
+         "player_i_five_year_average_pct_point_won_on_return" = "five_year_average_pct_point_won_on_return") %>% 
+  left_join(select(full_atp_data_markov, name, five_year_average_pct_point_won_on_serve, 
+                   five_year_average_pct_point_won_on_return, year_to_match_with),
+            by = c("player_j" = "name", "year" = "year_to_match_with")) %>% 
+  rename("player_j_five_year_average_pct_point_won_on_serve" = "five_year_average_pct_point_won_on_serve",
+         "player_j_five_year_average_pct_point_won_on_return" = "five_year_average_pct_point_won_on_return") %>% 
+  mutate(tour_average_pct_point_won_on_serve = 
+           five_year_tour_average_serve_return$pct_point_won_on_serve,
+         tour_average_pct_point_won_on_return = 
+           five_year_tour_average_serve_return$pct_point_won_on_return) %>% 
+  mutate(prob_player_i_wins_point_on_serve = 
+           tournament_average_pct_point_won_on_serve + 
+           (player_i_five_year_average_pct_point_won_on_serve - tour_average_pct_point_won_on_serve) - 
+           (player_j_five_year_average_pct_point_won_on_return - tour_average_pct_point_won_on_return),
+         prob_player_j_wins_point_on_serve = 
+           tournament_average_pct_point_won_on_serve + 
+           (player_j_five_year_average_pct_point_won_on_serve - tour_average_pct_point_won_on_serve) - 
+           (player_i_five_year_average_pct_point_won_on_return - tour_average_pct_point_won_on_return),
+         prob_player_i_wins_point_on_return = 1 - prob_player_j_wins_point_on_serve,
+         prob_player_j_wins_point_on_return = 1- prob_player_i_wins_point_on_serve
+  )
 
 grand_slam_rounds <- unique(twenty_nineteen_slams$round)
 
-foo <- purrr::map_df(x = grand_slam_rounds, .f = function(x)
+foo1 <- purrr::map_df(x = grand_slam_rounds, .f = function(x)
   
   { foo_ <- twenty_nineteen_slams %>% 
     filter(round == x) %>% 
@@ -217,42 +258,18 @@ foo <- purrr::map_df(x = grand_slam_rounds, .f = function(x)
 }
 )
   
-  
-  
-  
-
-fij = ft + (fi − fav) − (gj − gav)
 #Next we need to add averages and tounrmaent year before to this data from and 
 #3then work out the prob of winning a point on serve agaisnt player j.
 
-foo <- tidy_atp_matches %>% group_by(winner_name, loser_name) %>% 
-  summarise(n=n())
-  
 all_twenty_nineteen_slams_players <- unique(c(twenty_nineteen_slams$player_i,
                                               twenty_nineteen_slams$player_j)) %>% 
   as_tibble() %>% 
   left_join(select(full_atp_data, name, player_id), by = c("value" = "name")) %>% 
   unique()
 
-winner_head_to_head <- tidy_atp_matches %>% 
-  group_by(winner_name, loser_name) %>% 
-  tally(name = "player_i_wins") %>% 
-  rename("player_i" = "winner_name",
-         "player_j" = "loser_name") %>% 
-  ungroup() %>% 
-  filter(player_i %in% all_twenty_nineteen_slams_players) 
-
-
-looser_head_to_head <- tidy_atp_matches %>% 
-  group_by(loser_name, winner_name) %>% 
-  tally(name = "player_j_wins") %>% 
-  rename("player_j" = "winner_name",
-         "player_i" = "loser_name") %>% 
-  ungroup() %>% 
-  filter(player_j %in% all_twenty_nineteen_slams_players)
 
 players_and_games_scores <- tidy_atp_matches %>% 
-  select(winner_name, loser_name, score) %>% 
+  select(winner_name, loser_name, score, surface) %>% 
   mutate(score_without_tie = str_replace(score, "\\((\\d+)\\)", "")) %>% 
   filter(!str_detect(score, "RET")) %>% 
   separate(score_without_tie, 
@@ -284,8 +301,6 @@ loser_games_won_against_opponents <- players_and_games_scores %>%
   summarise(loser_games_won = sum(loser_total_games_won, na.rm = T))
 
 
-
-
 player_and_games_won_against_oppents <- all_potential_players %>% 
   left_join(winner_games_won_against_opponents, by = c("player_i" = "winner_name",
                                         "player_j" = "loser_name")) %>% 
@@ -305,67 +320,36 @@ game_base_model <- BTm(outcome = cbind(player_i, player_j_wins), player1 = playe
 
 
 
-find_head_to_head_records <- function(all_players, players_record_needed)
+n_times_won <- all_players %>% 
+  group_by(winner_name, loser_name) %>% 
+  tally()
+    
+when_player_i_wins <- all_potential_players %>%
+  left_join(n_times_won, 
+            by = c("player_i" = "winner_name", 
+                   "player_j" = "loser_name"))
+
+when_player_j_wins <- when_player_i_wins %>% 
+  left_join(n_times_won,
+            by = c("player_j" = "winner_name", 
+                   "player_i" = "loser_name")) %>% 
+  rename("player_i_wins" = "n.x",
+         "player_j_wins" = "n.y") %>% 
+  filter_at(vars(
+    player_i_wins, player_j_wins), any_vars(!is.na(.)))
   
-  {
+head_to_head_records <- when_player_j_wins
   
-  winner_head_to_head <- all_players %>% 
-    group_by(winner_name, loser_name) %>% 
-    tally(name = "player_i_wins") %>% 
-    rename("player_i" = "winner_name",
-           "player_j" = "loser_name") %>% 
-    ungroup() %>% 
-    filter(player_i %in% players_record_needed) 
-  
-  
-  looser_head_to_head <- all_players %>% 
-    group_by(loser_name, winner_name) %>% 
-    tally(name = "player_j_wins") %>% 
-    rename("player_j" = "winner_name",
-           "player_i" = "loser_name") %>% 
-    ungroup() %>% 
-    filter(player_j %in% players_record_needed)
-  
-  player_names_one <- rbind(as_tibble(unique(all_players$winner_name)), 
-                            as_tibble(unique(all_players$loser_name))) %>% 
-    rename("player_i" = "value") %>% 
-    unique()
-  
-  player_names_two <- rbind(as_tibble(unique(all_players$winner_name)), 
-                            as_tibble(unique(all_players$loser_name))) %>% 
-    rename("player_j" = "value") %>% 
-    unique()
-  
-  all_potential_players <- tidyr::crossing(player_names_one, player_names_two) %>% 
-    filter(!player_i == player_j)
-  
-  all_potential_head_to_head <- all_potential_players %>% 
-    left_join(winner_head_to_head, by = c("player_i" = "player_i",
-                                          "player_j" = "player_j")) %>% 
-    left_join(looser_head_to_head, by = c("player_i" = "player_i",
-                                          "player_j" = "player_j"))
-  
-  head_to_head_results <- all_potential_head_to_head %>% 
-    group_by(grp = paste(pmax(player_i, player_j), pmin(player_i, player_j), sep = "_")) %>%
-    slice(1) %>%
-    ungroup() %>%
-    select(-grp)
-  
-  head_to_head_results <- head_to_head_results %>% 
-    filter_at(vars(
-      player_i_wins, player_j_wins), any_vars(!is.na(.)))
-  
-  
-  head_to_head_results$player1 <- factor(head_to_head_results$player_i, 
-                                         levels=unique(c(head_to_head_results$player_i, 
-                                                         head_to_head_results$player_j)))  
-  head_to_head_results$player2 <- factor(head_to_head_results$player_j, 
-                                         levels=unique(c(head_to_head_results$player_i, 
-                                                         head_to_head_results$player_j)))  
+head_to_head_records$player1 <- factor(head_to_head_records$player_i, 
+                                         levels=unique(c(head_to_head_records$player_i, 
+                                                         head_to_head_records$player_j)))  
+head_to_head_records$player2 <- factor(head_to_head_records$player_j, 
+                                         levels=unique(c(head_to_head_records$player_i, 
+                                                         head_to_head_records$player_j)))  
   
   
   
-  return(head_to_head_results)
+  return(head_to_head_records)
   
 }
 
@@ -373,17 +357,81 @@ last_five_years_matches <- tidy_atp_matches %>%
   dplyr::filter(year(tourney_date) >2014)
 
 
-find_players_and_scores_from_model <- function(btm_model_results)
 
-{
 
-  bt_abilties <- BradleyTerry2::BTabilities(btm_model_results)
-  player_names <- as_tibble(rownames(bt_abilties))
-  bt_abilties_with_names <- cbind(bt_abilties, player_names)
+
+## Surface head to head recrods
+
+surface_head_to_head_records <- find_match_head_to_head_records(tidy_atp_matches,
+                                                          players_record_needed = all_twenty_nineteen_slams_players$value,
+                                                          by_surface = T) %>% rowwise() %>% 
+  mutate(player_i_wins = if_else(is.na(player_i_wins), as.numeric(0),as.numeric(player_i_wins)),
+         player_j_wins = if_else(is.na(player_j_wins), as.numeric(0), as.numeric(player_j_wins)))
+
+
+clay_record <- surface_head_to_head_records %>% 
+  filter(surface == "Clay")
+
+player_i_losses <- clay_record %>% 
+  filter(is.na(player_i_wins)) %>% 
+  group_by(player_i) %>% 
+  tally()
+
+player
+
+never_won_clay_j <- clay_record %>% 
+  filter(is.na(player_j_wins)) %>% 
+  group_by(player_j) %>% 
+  add_count(player_j) %>% 
+  rename("player_j_apps" = "n")
+
+hard_record <- surface_head_to_head_records %>% 
+  filter(surface == "Hard")
+
+grass_record <- surface_head_to_head_records %>% 
+  filter(surface == "Grass")
+
+
+
+clay_model <- BTm(outcome = cbind(player_i_wins, player_j_wins), player1 = player1, 
+                       player2 = player2, data = clay_record)
+
+clay_abilties <- BradleyTerry2::BTabilities(clay_model)
+clay_names <- as_tibble(rownames(clay_abilties))
+clay_abilties <- cbind(clay_names, clay_abilties)
+
+clay_stats_for_nineteen <- all_twenty_nineteen_slams_players %>% 
+  left_join(clay_abilties)
   
-  return(bt_abilties_with_names)
-  
-}
+twent
+
+all_head_to_head_record1 <- 
+  find_head_to_head_records(tidy_atp_matches, all_twenty_nineteen_slams_players$value,
+                            winner_group_vars = c("winner_name", 
+                                                  "loser_name", "tourney_date"),
+                            loser_group_vars = c("loser_name", "winner_name",
+                                                 "tourney_date")) 
+
+
+dated_head_to_head_results <- tidy_atp_matches %>% 
+  select(tourney_date, winner_name, loser_name) %>% 
+  mutate(player_i_win = 1, player_j_win = 0, date_start = ymd(20190101),
+         days_ago = difftime(date_start, tourney_date),
+         date = str_extract(days_ago, "[:digit:]*")) %>% 
+  select(winner_name, loser_name, player_i_win, player_j_win, date) 
+
+
+dated_head_to_head_results$player1 <- factor(dated_head_to_head_results$winner_name, 
+                                       levels=unique(c(dated_head_to_head_results$winner_name, 
+                                                       dated_head_to_head_results$loser_name)))  
+dated_head_to_head_results$player2 <- factor(dated_head_to_head_results$winner_name, 
+                                       levels=unique(c(dated_head_to_head_results$winner_name, 
+                                                       dated_head_to_head_results$loser_name)))  
+
+
+test_x <- BTdataframe(dated_head_to_head_results)
+
+
 
 five_year_head_to_head_record <- 
   find_head_to_head_records(last_five_years_matches, all_twenty_nineteen_slams_players$value)
@@ -409,9 +457,6 @@ player_names_two <- rbind(as_tibble(unique(tidy_atp_matches$winner_name)),
                           as_tibble(unique(tidy_atp_matches$loser_name))) %>% 
   rename("player_j" = "value") %>% 
   unique()
-
-all_potential_players <- tidyr::crossing(player_names_one, player_names_two) %>% 
-  filter(!player_i == player_j)
 
 all_potential_head_to_head <- all_potential_players %>% 
   left_join(winner_head_to_head, by = c("player_i" = "player_i",
