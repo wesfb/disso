@@ -235,7 +235,7 @@ twenty_eighteen_slams <- tidy_atp_matches %>%
            (player_i_five_year_average_pct_point_won_on_return - tour_average_pct_point_won_on_return),
          prob_player_i_wins_point_on_return = 1 - prob_player_j_wins_point_on_serve,
          prob_player_j_wins_point_on_return = 1- prob_player_i_wins_point_on_serve
-  )
+  ) 
 
 grand_slam_rounds <- unique(twenty_nineteen_slams$round)
 
@@ -271,7 +271,6 @@ all_twenty_nineteen_slams_players <- unique(c(twenty_nineteen_slams$player_i,
 players_and_games_scores <- tidy_atp_matches %>% 
   select(winner_name, loser_name, score, surface) %>% 
   mutate(score_without_tie = str_replace(score, "\\((\\d+)\\)", "")) %>% 
-  filter(!str_detect(score, "RET")) %>% 
   separate(score_without_tie, 
            c("set_one", "set_two", "set_three", "set_four", "set_five"), " ", 
            remove = FALSE) %>% 
@@ -289,10 +288,23 @@ players_and_games_scores <- tidy_atp_matches %>%
   mutate(winner_total_games_won = 
            rowSums(across(contains("games_winner")), na.rm = T)) %>% 
   mutate(loser_total_games_won = 
-           rowSums(across(contains("games_loser")), na.rm = T))  
+           rowSums(across(contains("games_loser")), na.rm = T),
+         player_i = pmax(winner_name, loser_name),
+         player_j = pmin(winner_name, loser_name),
+         player_i_games_won = if_else(winner_name == player_i, winner_total_games_won, loser_total_games_won),
+         player_j_games_won = if_else(winner_name == player_j, winner_total_games_won, loser_total_games_won))
+
+player_head_to_head_game_record_by_surface <- 
+  find_game_head_to_head_record(players_and_games_scores, all_twenty_nineteen_slams_players$value,
+                                by_surface = T) %>% rowwise() %>% 
+  mutate(player_i_wins = if_else(is.na(player_i_wins), as.numeric(0),as.numeric(player_i_wins)),
+         player_j_wins = if_else(is.na(player_j_wins), as.numeric(0), as.numeric(player_j_wins)))
+         
+                                
   
   
 winner_games_won_against_opponents <- players_and_games_scores %>% 
+  filter(str_detect(winner_name, "Albert Montanes")) %>% 
   group_by(winner_name, loser_name) %>% 
   summarise(winner_games_won = sum(winner_total_games_won, na.rm = T))
 
@@ -302,6 +314,7 @@ loser_games_won_against_opponents <- players_and_games_scores %>%
 
 
 player_and_games_won_against_oppents <- all_potential_players %>% 
+  filter(str_detect(player_i, "Albert Montanes")) %>% 
   left_join(winner_games_won_against_opponents, by = c("player_i" = "winner_name",
                                         "player_j" = "loser_name")) %>% 
   left_join(loser_games_won_against_opponents, by = c("player_i" = "winner_name",
@@ -313,6 +326,93 @@ player_and_games_won_against_oppents <- all_potential_players %>%
   arrange(grp)
   mutate(player_i_games_won = winner_games_won + lead(loser_game_won))
   
+  
+  find_game_head_to_head_record <- function(all_players, players_record_needed, by_surface)
+    
+  {
+    
+    player_names_one <- rbind(as_tibble(unique(all_players$player_i)), 
+                              as_tibble(unique(all_players$player_j))) %>% 
+      rename("player_i" = "value") %>% 
+      unique()
+    
+    player_names_two <- rbind(as_tibble(unique(all_players$player_i)), 
+                              as_tibble(unique(all_players$player_j))) %>% 
+      rename("player_j" = "value") %>% 
+      unique()
+    
+    all_potential_players <- tidyr::crossing(player_names_one, player_names_two) %>% 
+      mutate(player_i = pmax(player_i, player_j),
+             player_j = pmin(player_i, player_j)) %>% 
+      filter(!player_i == player_j) %>% 
+      group_by(grp = paste(pmax(player_i, player_j),
+                           pmin(player_i, player_j), sep = "_")) %>%
+      slice(1) %>%
+      ungroup() 
+    
+    if(by_surface == T)
+      
+    {   
+      all_potential_players <- all_potential_players %>% 
+      slice(rep(1:n(), each = length(surfaces))) %>% 
+      group_by(grp) %>% 
+      mutate(surface = rep(surfaces, times = 1)) %>% # 2x3 = 6 %>% 
+      ungroup()
+    
+    
+    player_i_games_won_against_opponents <- all_players %>% 
+      group_by(player_i, player_j, surface) %>% 
+      summarise(player_i_games_won = 
+                  sum(player_i_games_won, 
+                      na.rm = T)) %>% 
+      ungroup()
+    
+    player_j_games_won_against_opponents <- all_players %>% 
+      group_by(player_j, player_i, surface) %>% 
+      summarise(player_j_games_won = 
+                  sum(player_j_games_won, 
+                      na.rm = T)) %>% 
+      ungroup()
+    
+    player_and_games_won_against_oppents <- all_potential_players %>% 
+      left_join(player_i_games_won_against_opponents, by = c("player_i", "player_j", "surface")) %>% 
+      left_join(player_j_games_won_against_opponents, by = c("player_i", "player_j", "surface")) %>% 
+      filter_at(vars(
+        player_i_games_won, player_j_games_won), any_vars(!is.na(.))) %>% 
+      mutate(grp = paste(pmax(player_i, player_j), pmin(player_i, player_j), surface, sep = "_")) 
+  
+    
+    return(player_and_games_won_against_oppents)
+    
+    } else
+      
+    
+    player_i_games_won_against_opponents <- all_players %>% 
+      group_by(player_i, player_j) %>% 
+      summarise(player_i_games_won = 
+                  sum(player_i_games_won, 
+                      na.rm = T)) %>% 
+      ungroup()
+    
+    player_j_games_won_against_opponents <- all_players %>% 
+      group_by(player_j, player_i) %>% 
+      summarise(player_j_games_won = 
+                  sum(player_j_games_won, 
+                      na.rm = T)) %>% 
+      ungroup()
+    
+    player_and_games_won_against_oppents <- all_potential_players %>% 
+      left_join(player_i_games_won_against_opponents, by = c("player_i", "player_j")) %>% 
+      left_join(player_j_games_won_against_opponents, by = c("player_i", "player_j")) %>% 
+      filter_at(vars(
+        player_i_games_won, player_j_games_won), any_vars(!is.na(.))) %>% 
+      mutate(grp = paste(pmax(player_i, player_j), pmin(player_i, player_j), sep = "_")) 
+    
+    
+    return(player_and_games_won_against_oppents)
+    
+  }
+    
   
   
 game_base_model <- BTm(outcome = cbind(player_i, player_j_wins), player1 = player1, 
