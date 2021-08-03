@@ -5,7 +5,9 @@ library(dplyr)
 library(tidymodels)
 library(stringr)
 
-tidy_atp_matches <- readr::read_csv("tidy_atp_matches.csv")
+tidy_atp_matches <- readr::read_csv("tidy_atp_matches.csv") %>% 
+  mutate(player_i = pmax(winner_name, loser_name),
+         player_j = pmin(winner_name, loser_name))
 
 
 colSums(is.na(tidy_atp_matches)) %>% as.data.frame()
@@ -166,7 +168,7 @@ colSums(is.na(tidy_atp_matches)) %>% as.data.frame()
 #   group_by()
 
 
-tidy_atp_matches_with_match_record1 <- tidy_atp_matches %>% 
+tidy_atp_matches_with_match_record <- tidy_atp_matches %>% 
   mutate(player_i = pmax(winner_name, loser_name),
          player_j = pmin(winner_name, loser_name)) %>% 
   mutate(grp = paste(pmax(player_i, player_j),
@@ -188,7 +190,8 @@ tidy_atp_matches_with_match_record1 <- tidy_atp_matches %>%
   mutate(total_player_i_wins = row_number()) %>% 
   ungroup() %>% 
   group_by(player_j_wins, winner_name) %>% 
-  mutate(total_player_j_wins = row_number()) 
+  mutate(total_player_j_wins = row_number()) %>% 
+  ungroup()
   
   #filter(grp == "Roger Federer_Rafael Nadal") 
   
@@ -476,7 +479,7 @@ match_data <- purrr::map_df(.x = tidy_atp_matches_results$grp_two,
 readr::write_csv(match_data, "match_data_new.csv")     
 match_data_old <- readr::read_csv("match_data.csv")
 
-match_data <- readr::read_csv("match_data_new.csv")
+match_data <- readr::read_csv("match_data_new 2.csv")
 
 
 
@@ -507,6 +510,57 @@ test_join_record <- match_data %>%
   left_join(select(players_wins_loss_total, player_i, grp, 
                    grp_two, total_matches, total_wins, total_loses), 
                    by = c("player_i", "grp", "grp_two"))
+
+full_data <- match_data  %>% ungroup() %>% 
+  filter_at(vars(c(player_i_no_service_games, player_j_no_service_games)), any_vars(. !=0)) %>% 
+  filter(!grp_two == "Lukas Dlouhy_Andy Roddick_2008-580_R128") %>%
+  left_join(select(player_i_wins_loss_total, grp, grp_two, contains("player_i")),
+            by = c("player_i", "grp", "grp_two")) %>% 
+  left_join(select(player_j_wins_loss_total, grp, grp_two, contains("player_j")),
+            by = c("player_j", "grp", "grp_two")) %>% 
+  left_join(mean_height_for_country, by = c("player_i_ioc" = "ioc")) %>% 
+  rename("player_i_mean_ht" = "mean_ht") %>% 
+  left_join(mean_height_for_country, by = c("player_j_ioc" = "ioc")) %>% 
+  rename("player_j_mean_ht" = "mean_ht") %>% 
+  mutate(player_i_ht = if_else(is.na(player_i_ht) | is.nan(player_i_ht), player_i_mean_ht, player_i_ht),
+         player_j_ht = if_else(is.na(player_j_ht) | is.nan(player_j_ht), player_j_mean_ht, player_j_ht),
+         player_i_bp_converted_pct = if_else(is.nan(player_i_bp_converted_pct) | 
+                                               is.na(player_i_bp_converted_pct), 0, player_i_bp_converted_pct),
+         player_j_bp_converted_pct = if_else(is.nan(player_j_bp_converted_pct) |
+                                               is.na(player_j_bp_converted_pct), 0, player_j_bp_converted_pct),
+         player_i_bp_saved_pct = if_else(is.nan(player_i_bp_saved_pct) | 
+                                           is.na(player_i_bp_saved_pct), 0, player_i_bp_saved_pct),
+         player_j_bp_saved_pct = if_else(is.nan(player_j_bp_saved_pct) | 
+                                           is.na(player_j_bp_saved_pct), 0, player_j_bp_saved_pct)) %>% 
+  left_join(select(tidy_atp_matches_with_match_record, grp_two, h2h_record, match_num),
+            by = c("grp_two")) %>% 
+  select(grp, grp_two, contains("player"), h2h_record, surface, result) %>% 
+  na.omit() %>% 
+  mutate(surface = as.factor(surface),
+         player_i_hand = as.factor(player_i_hand),
+         player_j_hand = as.factor(player_j_hand))
+
+player_i_long <- full_data %>% 
+  select(contains("player_i"), result, -player_i, -player_i_hand, -player_i_ioc) %>% 
+  pivot_longer(cols = c(contains("player_i")), names_to = "player_data") %>% 
+  mutate(id = "player_i") 
+
+player_j_long <- full_data %>% 
+  select(contains("player_j"), result, -player_j, -player_j_hand, -player_j_ioc) %>% 
+  pivot_longer(cols = c(contains("player_j")), names_to = "player_data") %>% 
+  mutate(id = "player_j") 
+
+all_player_long <- rbind(player_i_long, player_j_long) %>% 
+  mutate(player_data_ = str_replace(player_data, "player_j_",  ""),
+         player_data_ = str_replace(player_data, "player_i_",  "")) %>% 
+  mutate(player_data = player_data_) %>% 
+  select(-player_data_) %>% 
+  arrange(player_data)
+
+
+all_player_long %>% 
+ggplot(aes(value, fill = id)) + 
+  geom_histogram() + facet_wrap(~player_data)
 
 full_data_with_features <- match_data  %>% ungroup() %>% 
   filter_at(vars(c(player_i_no_service_games, player_j_no_service_games)), any_vars(. !=0)) %>% 
@@ -556,7 +610,10 @@ full_data_with_features <- match_data  %>% ungroup() %>%
   #select(player_i, player_j, surface, player_i_hand, player_j_hand, contains("diff")) %>% 
   select(grp, grp_two, player_i, player_j, surface, player_i_hand, player_j_hand, 
          contains("diff"), h2h_record, result) %>% 
-  na.omit() 
+  na.omit() %>% 
+  mutate(surface = as.factor(surface),
+         player_i_hand = as.factor(player_i_hand),
+         player_j_hand = as.factor(player_j_hand))
 
 names(full_data_with_features)
 ## Rational was to use, stats of the game that got them the win, with prior winning and loses up to that match i.e confidence.
@@ -577,7 +634,12 @@ library(tidyr)
 library(corrr)
 library(corrpl)
 
-full_data_with_features <- readr::read_csv("full_data_with_features.csv")
+full_data_with_features <- readr::read_csv("full_data_with_features_new 2.csv") %>% 
+  dplyr::mutate(result = as.factor(result),
+                surface = as.factor(surface),
+               player_i_hand = as.factor(player_i_hand),
+               player_j_hand = as.factor(player_j_hand)) %>% 
+  select(-pct_return_points_won_diff, -first_serve_return_win_pct_diff, -second_serve_return_win_pct_diff)
 
 
 corrr_foo <- full_data_with_features %>% 
@@ -589,17 +651,17 @@ corrr_foo <- full_data_with_features %>%
 
 full_data_with_features %>% 
   select(contains("diff"), -pct_return_points_won_diff, -first_serve_return_win_pct_diff, -second_serve_return_win_pct_diff) %>%
-  cor(method = "kendall") %>% 
+  cor() %>% 
   ggcorrplot::ggcorrplot(., method = 'square', type = 'lower')
 
 
 ### Some Box plots of data
 full_data_with_features_long <- full_data_with_features %>% 
-  select(-where(is.character)) %>% 
+  select(-where(is.character), -where(is.factor), result) %>% 
   pivot_longer(cols = c(contains("diff"), h2h_record), names_to = "variable")
 
 full_data_with_features_long %>% 
-ggplot(aes(x = result, y = value),fill=result) +
+ggplot(aes(x = result, y = value)) +
   geom_boxplot() +
   facet_wrap(.~variable, scales = "free") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
@@ -617,11 +679,194 @@ summary(one_way)
 
 ## Use recipies for PCA analysis
 
+##Variation in results form components, what % of variation are we capturing in each compoment
+
 ## To start here next
 library(tidymodels)
+
+set.seed(123)
+
+# data_split <- initial_split(full_data_with_features, prop = 0.80)
+# data_split
+# 
+# training_data <- training(data_split)
+#   
+# testing_data <- testing(data_split)
+
+data_split <- initial_split(full_data_with_features, prop = 0.80, strata = result)
+
+training_data <- training(data_split)
+
+testing_data <- testing(data_split)
+
+testing_data %>% 
+  filter(result ==1) %>% 
+  nrow()
+
+## Creaete a receipe
+
+recipe(result ~ ., data = training_data) %>%
+  summary()
+
+training_recipie_one <- recipes::recipe(result ~ ., data = training_data) %>%
+recipes::update_role(grp:player_j, new_role = "id") %>%
+#recipes::step_corr(all_numeric()) %>% 
+step_dummy(all_predictors(),-all_numeric()) %>% 
+recipes::step_normalize(all_numeric()) %>% 
+#recipes::step_pca(all_predictors())
+recipes::prep()
+                  
+
+recipie_with_pca <- recipes::recipe(result ~ ., data = training_data) %>%
+  recipes::update_role(grp:player_j, new_role = "id") %>%
+  #recipes::step_corr(all_numeric()) %>% 
+  step_dummy(all_predictors(),-all_numeric()) %>% 
+  recipes::step_normalize(all_numeric()) %>% 
+  recipes::step_pca(all_predictors())
+
+
+pca_prep <- prep(recipie_with_pca)
+
+clean_pca <- tidy(pca_prep,3)
+
+clean_pca %>% 
+  filter(component %in% paste0("PC", 1:5)) %>% 
+  mutate(component = forcats::fct_inorder(component)) %>% 
+  ggplot(aes(value, terms, fill = terms)) +
+  geom_col(show.legend = FALSE) + 
+  facet_wrap(~component, nrow = 1) +
+  labs(y = NULL)
+
+clean_pca %>% 
+  filter(component %in% paste0("PC", 1:5)) %>% 
+  group_by(component) %>% 
+  top_n(8, abs(value)) %>% 
+  ungroup() %>% 
+  mutate(terms = tidytext::reorder_within(terms, abs(value), component)) %>% 
+  ggplot(aes(abs(value), terms, fill = value > 0)) +
+  geom_col() +
+  scale_y_reordered() +
+  facet_wrap(~component, scales = "free_y") +
+  labs(y = NULL, fill = "> 0?")
+
+
+##The first component expalins most variaition in the match result, so 
+#pct point won on serve / pct serve points own, expalins the nbiggest diff
+#cp2 = total losses and matches played coming into the mathch
+#pc3 heigh and aces diff
+
+
+##  juice the prep recipe gets the data back out and gives us the the match and 
+# where they are in the priciple compoennts in the new 5 diemnsional space form 20ish
+
+#
+
+juice(pca_prep) %>% 
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(color = str_detect(player_i, "Nadal")), alpha = 0.7, size =2) 
+
+
+## Y are the features, the bars are how much they contriobute to each of the components
+#Go togetber are the serve points
+
+lasso_logit_spec <- logistic_reg(mode = "classification", penalty = 0.1, mixture = 1) %>%
+  set_engine(engine = "glm") 
+
+
+lasso_logit_workflow <- workflow() %>%
+  add_recipe(training_recipie_one)
+
+lasso_logit_fit <- lasso_logit_workflow %>%
+  add_model(lasso_logit_spec) %>%
+  fit(data = training_data)
+
+lasso_logit_fit %>%
+  extract_fit_parsnip() %>%
+  tidy()
+
+set.seed(1234)
+cross_val_samples <- mc_cv(training_data, times = 10)
+
+lasso_tune_spec <- logistic_reg(mode ="classification",  
+                                penalty = tune::tune(), mixture = 1) %>%
+  set_engine("glm")
+
+lambda_grid_to_search <- grid_regular(penalty(), levels = 10)
+
+ctrl <- control_resamples(save_pred = TRUE)
+
+
+lasso_grid <- tune_grid(
+  lasso_logit_workflow %>% 
+    add_model(lasso_tune_spec),
+  resamples = cross_val_samples,
+  grid = lambda_grid_to_search,
+  control = ctrl
+)
+
+lasso_grid %>% 
+  collect_metrics()
+
+cv_predictions<- lasso_grid %>% 
+  collect_predictions() %>% 
+  arrange(.row)
+
+
+
+prepped_training_data <- recipes::juice(training_recipie_one)
+
+baked_testing_data <- recipes::bake(training_recipie_one, new_data = testing_data)
+
+logit_spec <- logistic_reg(mode = "classification") %>%
+  set_engine(engine = "glm") 
+
+logit_fit <- logit_spec %>% 
+  fit(result ~., data = juice(training_recipie_one))
+  
+
+logit_fit %>% summary()
+
+wf <- workflow() %>%
+  add_model(logit_spec) %>%
+  add_recipe(training_recipie_one)
+
+logit_fit <- fit(wf, training_data)
+
+
+logistic_regression_results <- testing_data %>% 
+  select(grp_two, result) %>% 
+  bind_cols(predict(logit_fit, new_data = testing_data)) %>% 
+  # Add 95% prediction intervals to the results:
+  bind_cols(predict(logit_fit, testing_data, type = "prob")) %>% 
+  as_tibble()
+
+data("two_class_example")
+mn_log_loss(two_class_example, truth, Class)
+mn_log_loss(logistic_regression_results, result, .pred_0)
+
+
+
+## Naive guess would say p = 0.5 thereofrre -log(0.5) = 0.693
+# -log(x) = 0.146
+
+
+
+logit_fit %>% 
+  predict(new_data = bake(training_recipie_one, new_data = testing_data), type = "prob")
+  # Add 95% prediction intervals to the results:
+  bind_cols(predict(logit_fit, baked_testing_data, type = "pred_int")) 
+
+# To tidy the model fit: 
+foo <- logit_fit %>% 
+  # This returns the parsnip object:
+  extract_fit_parsnip() %>% 
+  tidy() %>% 
+  slice(1:5)
+  
+
+
 foo <- recipes::recipe(result ~ ., data = full_data_with_features) %>% 
-  recipes::update_role(grp:player_j_hand, new_role = "id") %>% 
-  recipes::step_normalize(all_predictors()) %>% 
+  recipes::update_role(grp:player_j, new_role = "id") %>% 
   step_pca(all_predictors())
 
 foo1 <- prep(foo)
