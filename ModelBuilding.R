@@ -86,6 +86,8 @@ mn_log_loss(logistic_regression_results, result, .pred_0)
 
 set.seed(1234)
 cross_val_samples <- mc_cv(training_data, times = 10)
+cross_val_samples_test <- mc_cv(training_data, times = 2)
+
 
 penalised_log_regression <- logistic_reg(mode ="classification",  
                                 penalty = tune::tune(), mixture = tune()) %>%
@@ -99,16 +101,16 @@ penalised_log_regression_grid <-
 
 
 ctrl <- control_resamples(save_pred = TRUE)
-multi_metric <- metric_set(accuracy, mcc, f_meas, mn_log_loss)
+multi_metric <- metric_set(accuracy, mcc, f_meas, mn_log_loss, roc_auc)
 
 penalised_log_regression_wf <- workflow() %>%
   add_recipe(training_recipie_one) %>% 
   add_model(penalised_log_regression) 
 
-penalised_log_regression_tune <- 
+penalised_log_regression_tune1 <- 
   tune_grid(penalised_log_regression_wf, 
             grid = penalised_log_regression_grid,
-            resamples = cross_val_samples,
+            resamples = cross_val_samples_test,
             metrics = multi_metric,
             control = ctrl)
 
@@ -399,13 +401,87 @@ mn_log_loss(svm_results, result, .pred_0)
 svm_tune$.metrics
 
 
-plot(iris)
+## Neural Netowrk
 
 
-full_data_with_features %>% 
-  select(age_diff:result) %>% 
-  plot()
+nn_mod <- mlp(epochs = 100, hidden_units = 5, dropout = 0.1) %>%
+  set_mode("classification") %>% 
+  # Also set engine-specific `verbose` argument to prevent logging the results: 
+  set_engine("keras", verbose = 0)
 
+nn_wf <- workflow() %>% 
+  add_recipe(training_recipie_one) %>% 
+  add_model(nn_mod)
+
+
+
+nn_fit <- nn_wf %>% 
+  fit(data = training_data)
+nn_fit
+summary(nn_fit)
+
+nn_tune_mod <-  mlp(epochs = tune(), hidden_units = tune(),
+                    penalty = tune()) %>%
+  set_mode("classification") %>% 
+  # Also set engine-specific `verbose` argument to prevent logging the results: 
+  set_engine("keras", verbose = 0)
+
+nn_grid <- nn_tune_mod %>%
+  parameters() %>%
+  grid_max_entropy(size = 10)
+
+nn_tuned_wf <- workflow() %>% 
+  add_recipe(training_recipie_one) %>% 
+  add_model(nn_tune_mod)
+
+nn_tuned_model <- 
+  tune_grid(nn_tuned_wf,
+           resamples = cross_val_samples,
+           grid = nn_grid,
+           metrics = multi_metric,
+           control = control_resamples(save_pred = TRUE))
+
+rlist::list.save(nn_tuned_model, 'nn_tuned_model.rds')
+foo_nn_tune_test <- rlist::list.load("nn_tuned_model.rds")
+
+all.equal(nn_tuned_model, foo_nn_tune_test)
+
+svm_best_param <- nn_tuned_model %>% 
+  tune::select_best(metric = "roc_auc")
+
+
+show_best(nn_tuned_model, metric = "accuracy")
+
+
+
+log_regression_fit_parameters <- log_regression_fit %>% 
+  extract_fit_parsnip() %>% 
+  tidy()
+
+nn_results <- testing_data %>% 
+  select(grp_two, result) %>% 
+  bind_cols(predict(nn_fit, new_data = testing_data)) %>% 
+  bind_cols(predict(nn_fit, testing_data, type = "prob")) %>% 
+  as_tibble() %>% 
+  mutate(log_prob = if_else(result == 0, log(.pred_0), log(.pred_1)))
+
+conf_mat(nn_results, truth = result, estimate = .pred_class)
+accuracy(nn_results, truth = result, estimate = .pred_class)
+mcc(nn_results, truth = result, estimate = .pred_class)
+f_meas(nn_results, truth = result, estimate = .pred_class)
+mn_log_loss(nn_results, result, .pred_0)
+
+
+
+
+
+# plot(iris)
+# 
+# 
+# full_data_with_features %>% 
+#   select(age_diff:result) %>% 
+#   plot()
+# 
 
 
 # 
